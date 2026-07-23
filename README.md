@@ -82,3 +82,23 @@ The Match, Batch, and Designer screens are vertically scrollable so their primar
 
 ## 3.2 Designer live refresh
 Custom strategy families are available immediately after saving. Use `FamilyName` for the latest version or `FamilyName vN` for an exact saved version.
+
+## Install from PyPI
+
+JinnLab is available on PyPI:
+
+```bash
+python3 -m pip install jinnlab
+jinnlab
+```
+
+Upgrade to the latest release with:
+
+```bash
+python3 -m pip install --upgrade jinnlab
+```
+
+Package page:
+
+https://pypi.org/project/jinnlab/
+
