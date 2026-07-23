@@ -49,7 +49,7 @@ Look for patterns that survive changes in opponent mix, turns, population, mutat
 
 
 class JinnLab(App):
-    TITLE = "JinnLab 3.2"
+    TITLE = "JinnLab 3.3.3"
     SUB_TITLE = "Evolutionary Game Theory Research Workbench"
     BINDINGS = [
         ("q", "quit", "Quit"), ("m", "start_match", "Start Match"), ("b", "start_batch", "Run Batch"), ("d", "save_designer", "Save Design"),
@@ -75,6 +75,9 @@ class JinnLab(App):
     #strategy-list { width: 32; }
     #strategy-detail-pane { width: 1fr; padding: 1; }
     #strategy-note { height: 8; }
+    #matrix-picker { width: 1fr; }
+    #matrix-selected { height: 3; min-height: 3; padding: 0 1; }
+    #matrix-table { height: 15; min-height: 10; }
     #hypothesis, #observation, #conclusion { height: 6; }
     #status { height: 1; dock: bottom; }
     """
@@ -83,6 +86,12 @@ class JinnLab(App):
         super().__init__()
         self.db = ResultsDB(DB_PATH)
         self.reload_catalog()
+        self.matrix_selected = [
+            self._default("Tit For Tat"),
+            self._default("Defector", 1),
+            self._default("Grudger", 2),
+            self._default("Cooperator", 3),
+        ]
 
     def reload_catalog(self):
         self.catalog = strategy_catalog(self.db.strategy_designs())
@@ -140,11 +149,32 @@ class JinnLab(App):
                     yield Markdown("### How to interpret batch results\nThe top row has the highest **average aggregate score across seeds**. A tiny lead may be noise; increase seeds/repetitions. A strategy that stays near the top across many seeds is stronger evidence of robust performance.", id="batch-explain", classes="explain")
 
             with TabPane("Matrix", id="matrix"):
-                yield Markdown("## Strategy Comparison Matrix\nRows are the focal strategy; columns are opponents. Each cell is the row strategy's average score.")
-                yield Input("Tit For Tat,Defector,Grudger,Cooperator", id="matrix-strategies")
-                yield Button("Build Payoff Matrix", id="run-matrix", variant="primary")
-                yield DataTable(id="matrix-table")
-                yield Markdown("**How to read it:** A high row value against a particular column means that row strategy earns well against that opponent. Compare reciprocal cells to spot exploitation vs mutual benefit.", classes="explain")
+                with VerticalScroll(classes="scroll"):
+                    yield Markdown("## Strategy Comparison Matrix\nUse the single dropdown to add strategies to the field. This keeps the controls compact so the score matrix remains visible. You can compare **2 to 12 strategies**.\n\nThe matrix includes each matchup score plus **Total** and **Average** row scores, restoring the ranking information from the earlier version.")
+                    with Horizontal(classes="controls"):
+                        with Vertical(classes="field"):
+                            yield Label("Add strategy")
+                            yield Select(options, value=self._default("Tit For Tat"), id="matrix-picker")
+                        with Vertical(classes="field"):
+                            yield Label("Turns")
+                            yield Input("60", id="matrix-turns", type="integer")
+                        with Vertical(classes="field"):
+                            yield Label("Repetitions")
+                            yield Input("1", id="matrix-reps", type="integer")
+                        with Vertical(classes="field"):
+                            yield Label("Seed")
+                            yield Input("10000", id="matrix-seed", type="integer")
+                    with Horizontal(classes="actions"):
+                        yield Button("+ Add", id="matrix-add", variant="primary")
+                        yield Button("Remove Last", id="matrix-remove")
+                        yield Button("Clear", id="matrix-clear")
+                        yield Button("Defaults", id="reset-matrix")
+                        yield Button("▶ BUILD MATRIX", id="run-matrix", variant="success", classes="primary-action")
+                    yield Static("", id="matrix-selected")
+                    yield Static("4 strategies selected. Matrix size: 4 × 4.", id="matrix-selection-status", classes="hint")
+                    yield DataTable(id="matrix-table")
+                    yield Static("Tip: use the arrow keys / horizontal scroll to inspect wide matrices and the Total/Average columns.", classes="hint")
+                    yield Markdown("### How to read it\nEach matchup cell is the row strategy's score against the column strategy. **Total** adds that row across the field; **Average** divides by the number of opponents shown. Compare reciprocal cells to spot exploitation versus mutual benefit.", id="matrix-explain", classes="explain")
 
             with TabPane("Evolution", id="evolution"):
                 yield Markdown("## Evolution Lab\nPopulation format: `Tit For Tat=40,Defector=30,Cooperator=20,Grudger=10`.")
@@ -220,7 +250,7 @@ class JinnLab(App):
         yield Footer()
 
     def on_mount(self):
-        self.setup_tables(); self.refresh_history(); self.refresh_analytics(); self.refresh_designs()
+        self.setup_tables(); self.refresh_history(); self.refresh_analytics(); self.refresh_designs(); self._update_matrix_selection_status()
 
     def setup_tables(self):
         self.query_one("#tournament-table", DataTable).add_columns("Rank", "Strategy", "Aggregate Score")
@@ -333,24 +363,143 @@ class JinnLab(App):
             self.call_from_thread(update)
         except Exception as e:self.call_from_thread(self.notify,str(e),severity="error")
 
+    def _matrix_names(self):
+        names = list(dict.fromkeys(self.matrix_selected))
+        if len(names) < 2:
+            raise ValueError("Choose at least two strategies for the Matrix")
+        if len(names) > 12:
+            raise ValueError("Matrix supports up to 12 strategies")
+        return names
+
+    def _matrix_inputs(self):
+        names = self._matrix_names()
+        turns = max(1, int(self.query_one("#matrix-turns", Input).value or 60))
+        reps = max(1, int(self.query_one("#matrix-reps", Input).value or 1))
+        seed_text = self.query_one("#matrix-seed", Input).value.strip()
+        seed = int(seed_text) if seed_text else None
+        return names, turns, reps, seed
+
+    def _update_matrix_selection_status(self):
+        count = len(self.matrix_selected)
+        self.query_one("#matrix-selection-status", Static).update(
+            f"{count} strategies selected. Matrix size: {count} × {count}."
+            if count >= 2 else f"{count} selected. Choose at least 2 strategies."
+        )
+        shown = "  •  ".join(self.matrix_selected) if self.matrix_selected else "No strategies selected."
+        self.query_one("#matrix-selected", Static).update(shown)
+
+    @on(Button.Pressed,"#matrix-add")
+    def matrix_add_strategy(self):
+        name = str(self.query_one("#matrix-picker", Select).value or "").strip()
+        if not name:
+            return
+        if name in self.matrix_selected:
+            self.notify(f"{name} is already selected", severity="warning")
+            return
+        if len(self.matrix_selected) >= 12:
+            self.notify("Matrix supports up to 12 strategies", severity="warning")
+            return
+        self.matrix_selected.append(name)
+        self._update_matrix_selection_status()
+
+    @on(Button.Pressed,"#matrix-remove")
+    def matrix_remove_strategy(self):
+        if self.matrix_selected:
+            self.matrix_selected.pop()
+        self._update_matrix_selection_status()
+
+    @on(Button.Pressed,"#matrix-clear")
+    def matrix_clear_strategies(self):
+        self.matrix_selected = []
+        self.query_one("#matrix-table", DataTable).clear(columns=True)
+        self._update_matrix_selection_status()
+
+    @on(Button.Pressed,"#reset-matrix")
+    def reset_matrix(self):
+        self.matrix_selected = [
+            self._default("Tit For Tat"),
+            self._default("Defector", 1),
+            self._default("Grudger", 2),
+            self._default("Cooperator", 3),
+        ]
+        self.query_one("#matrix-turns", Input).value = "60"
+        self.query_one("#matrix-reps", Input).value = "1"
+        self.query_one("#matrix-seed", Input).value = "10000"
+        self.query_one("#matrix-table", DataTable).clear(columns=True)
+        self.query_one("#matrix-explain", Markdown).update(
+            "### How to read it\nAdd strategies with the dropdown, then build the matrix. "
+            "Total and Average summarize each row's field performance."
+        )
+        self._update_matrix_selection_status()
+
     @on(Button.Pressed,"#run-matrix")
     def start_matrix(self):
-        try:names=self._names_from("#matrix-strategies");_,_,turns,reps,seed=self._match_inputs()
-        except Exception as e:self.notify(str(e),severity="error");return
+        try:
+            names, turns, reps, seed = self._matrix_inputs()
+        except Exception as e:
+            self.notify(str(e),severity="error")
+            return
+        slow = []
+        for name in names:
+            try:
+                if str(strategy_info(name, self.catalog).get("long_run", "False")).lower() == "true":
+                    slow.append(name)
+            except Exception:
+                pass
+        warning = ""
+        if slow:
+            warning = "\n\n⚠ Long-running strategy detected: " + ", ".join(slow) + ". This pairing may take much longer."
+        total_pairs = len(names) * (len(names) + 1) // 2
+        self.query_one("#matrix-explain", Markdown).update(
+            f"### Running…\n0/{total_pairs} pairings complete. Building a {len(names)} × {len(names)} matrix "
+            f"with {turns} turns and {reps} repetition(s).{warning}"
+        )
         self.matrix_worker(names,turns,reps,seed)
 
     @work(thread=True,exclusive=True,group="simulation")
     def matrix_worker(self,names,turns,reps,seed):
         try:
-            matrix=run_matrix(names,turns,reps,seed,self.catalog)
+            def progress(done, total, a, b):
+                self.call_from_thread(
+                    self.query_one("#matrix-explain", Markdown).update,
+                    f"### Running…\n**{done}/{total} pairings complete** — last: `{a}` vs `{b}`. "
+                    "If one pairing remains here for a long time, that strategy is computationally expensive; lower turns/repetitions for a quick scan."
+                )
+
+            matrix=run_matrix(names,turns,reps,seed,self.catalog,progress_callback=progress)
             best=max(names,key=lambda n:sum(matrix[n].values()))
             self.db.add_experiment(experiment_type="matrix",winner=best,turns=turns,repetitions=reps,seed=seed,metadata=json.dumps({"strategies":names,"matrix":matrix}))
             def update():
-                old=self.query_one("#matrix-table",DataTable); old.clear(columns=True); old.add_columns("Strategy",*names)
-                for a in names:old.add_row(a,*[f"{matrix[a][b]:.1f}" for b in names])
+                old=self.query_one("#matrix-table",DataTable)
+                old.clear(columns=True)
+                old.add_columns("Strategy", *names, "Total", "Average")
+                totals = {a: sum(matrix[a].values()) for a in names}
+                avgs = {a: totals[a] / max(1, len(names)) for a in names}
+                for a in names:
+                    old.add_row(
+                        a,
+                        *[f"{matrix[a][b]:.1f}" for b in names],
+                        f"{totals[a]:.1f}",
+                        f"{avgs[a]:.2f}",
+                    )
+                ranked = sorted(names, key=lambda n: totals[n], reverse=True)
+                leader = ranked[0]
+                runner = ranked[1] if len(ranked) > 1 else None
+                gap = totals[leader] - totals[runner] if runner else 0.0
+                self.query_one("#matrix-explain",Markdown).update(
+                    f"### Matrix complete\n**{leader}** ranks first with a total score of **{totals[leader]:.1f}** "
+                    f"and an average of **{avgs[leader]:.2f}** per opponent."
+                    + (f" The lead over **{runner}** is **{gap:.1f}** total points." if runner else "")
+                    + "\n\nUse the individual cells to see *why* the leader scored well: mutual cooperation, exploitation, "
+                      "or resilience against defectors. Increase repetitions for close rankings."
+                )
                 self.refresh_history();self.refresh_analytics()
             self.call_from_thread(update)
-        except Exception as e:self.call_from_thread(self.notify,str(e),severity="error")
+        except Exception as e:
+            def failed():
+                self.query_one("#matrix-explain",Markdown).update(f"### Matrix failed\n`{e}`\n\nChange the selection or lower turns/repetitions and run again.")
+                self.notify(str(e),severity="error")
+            self.call_from_thread(failed)
 
     @on(Button.Pressed,"#run-evolution")
     def start_evolution(self):
@@ -433,6 +582,16 @@ class JinnLab(App):
                     select.value=current
             except Exception:
                 pass
+        try:
+            picker=self.query_one("#matrix-picker",Select)
+            current=str(picker.value or "")
+            picker.set_options(options)
+            if current in self.catalog:
+                picker.value=current
+            self.matrix_selected=[n for n in self.matrix_selected if n in self.catalog]
+            self._update_matrix_selection_status()
+        except Exception:
+            pass
         try:
             lv=self.query_one("#strategy-list",ListView)
             lv.clear()

@@ -135,17 +135,27 @@ def run_tournament(names: Sequence[str], turns: int = 100, repetitions: int = 3,
 
 
 def run_matrix(names: Sequence[str], turns: int = 100, repetitions: int = 3,
-               seed: int | None = None, catalog: Mapping[str, type] | None = None) -> dict[str, dict[str, float]]:
+               seed: int | None = None, catalog: Mapping[str, type] | None = None,
+               progress_callback=None) -> dict[str, dict[str, float]]:
     if len(names) < 2:
         raise ValueError("Matrix needs at least two strategies")
     catalog = catalog or strategy_catalog()
+    # Compute each unordered pairing once. The old implementation simulated both
+    # A-vs-B and B-vs-A separately, which made larger matrices appear to hang.
     matrix: dict[str, dict[str, float]] = {n: {} for n in names}
+    total_pairs = len(names) * (len(names) + 1) // 2
+    completed = 0
     for i, a in enumerate(names):
-        for j, b in enumerate(names):
+        for j in range(i, len(names)):
+            b = names[j]
             result = run_match(a, b, turns, repetitions,
                                None if seed is None else seed + i * 1000 + j,
                                catalog)
             matrix[a][b] = result.score1
+            matrix[b][a] = result.score2 if a != b else result.score1
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(completed, total_pairs, a, b)
     return matrix
 
 
